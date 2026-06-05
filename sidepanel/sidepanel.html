@@ -1,0 +1,166 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>YTVLater - Saved Videos</title>
+  <!-- Google Fonts: Inter and Outfit -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Outfit:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+  <!-- Tailwind CSS File (Compiled locally) -->
+  <link rel="stylesheet" href="tailwind.css">
+  <link rel="shortcut icon" href="../icons/favicon.png" type="image/png">
+</head>
+<body class="bg-white text-slate-900 dark:bg-slate-950 dark:text-slate-100 flex flex-col h-screen overflow-hidden select-none font-sans transition-colors duration-300">
+
+  <!-- Header Banner -->
+  <header class="bg-slate-50 dark:bg-slate-900 border-b border-slate-200 dark:border-slate-800/80 px-4 py-3.5 flex-shrink-0 transition-colors duration-300">
+    <div class="flex items-center justify-between">
+      <div class="flex items-center">
+        <div>
+          <h1 class="text-base font-bold tracking-tight text-slate-800 dark:text-slate-100 font-outfit leading-none">YTVLater</h1>
+          <span class="text-[9px] text-slate-450 dark:text-slate-500 font-bold tracking-wider uppercase">Watch List</span>
+        </div>
+      </div>
+
+      <!-- Action Buttons in Header -->
+      <div class="flex items-center space-x-0.5">
+        <!-- Theme Toggle Button Group -->
+        <div class="inline-flex rounded-lg border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 p-0.5 mr-1.5" id="ytv-theme-group">
+          <button id="ytv-theme-btn-auto" class="px-2.5 py-1 text-[11px] rounded-md font-medium text-slate-600 hover:text-slate-900 dark:text-slate-400 dark:hover:text-slate-200 transition-all focus:outline-none tooltip" title="System Theme" aria-label="System Theme">
+            <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" viewBox="0 0 24 24">
+              <rect x="2" y="3" width="20" height="14" rx="2" ry="2"></rect>
+              <line x1="8" y1="21" x2="16" y2="21"></line>
+              <line x1="12" y1="17" x2="12" y2="21"></line>
+            </svg>
+          </button>
+          <button id="ytv-theme-btn-light" class="px-2.5 py-1 text-[11px] rounded-md font-medium text-slate-600 hover:text-slate-900 dark:text-slate-400 dark:hover:text-slate-200 transition-all focus:outline-none tooltip" title="Light Theme" aria-label="Light Theme">
+            <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" viewBox="0 0 24 24">
+              <circle cx="12" cy="12" r="5"></circle>
+              <line x1="12" y1="1" x2="12" y2="3"></line>
+              <line x1="12" y1="21" x2="12" y2="23"></line>
+              <line x1="4.22" y1="4.22" x2="5.64" y2="5.64"></line>
+              <line x1="18.36" y1="18.36" x2="19.78" y2="19.78"></line>
+              <line x1="1" y1="12" x2="3" y2="12"></line>
+              <line x1="21" y1="12" x2="23" y2="12"></line>
+              <line x1="4.22" y1="19.78" x2="5.64" y2="18.36"></line>
+              <line x1="18.36" y1="5.64" x2="19.78" y2="4.22"></line>
+            </svg>
+          </button>
+          <button id="ytv-theme-btn-dark" class="px-2.5 py-1 text-[11px] rounded-md font-medium text-slate-600 hover:text-slate-900 dark:text-slate-400 dark:hover:text-slate-200 transition-all focus:outline-none tooltip" title="Dark Theme" aria-label="Dark Theme">
+            <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" viewBox="0 0 24 24">
+              <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"></path>
+            </svg>
+          </button>
+        </div>
+
+        <!-- Import Button -->
+        <button id="ytv-import-btn" class="p-1.5 text-slate-500 hover:text-slate-755 hover:bg-slate-200/50 dark:text-slate-400 dark:hover:text-slate-200 dark:hover:bg-slate-800/60 rounded-lg transition-colors tooltip" title="Import Backup" aria-label="Import Backup">
+          <svg class="w-4.5 h-4.5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" d="M3 16.5v2.25A2.25 2.25 0 005.25 21h13.5A2.25 2.25 0 0021 18.75V16.5m-13.5-9L12 3m0 0l4.5 4.5M12 3v13.5" />
+          </svg>
+        </button>
+        <input type="file" id="ytv-import-file" class="hidden" accept=".json">
+        
+        <!-- Export Button -->
+        <button id="ytv-export-btn" class="p-1.5 text-slate-500 hover:text-slate-755 hover:bg-slate-200/50 dark:text-slate-400 dark:hover:text-slate-200 dark:hover:bg-slate-800/60 rounded-lg transition-colors tooltip" title="Export Backup" aria-label="Export Backup">
+          <svg class="w-4.5 h-4.5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" d="M3 16.5v2.25A2.25 2.25 0 005.25 21h13.5A2.25 2.25 0 0021 18.75V16.5M16.5 12L12 16.5m0 0L7.5 12m4.5 4.5V3" />
+          </svg>
+        </button>
+      </div>
+    </div>
+  </header>
+
+  <!-- Sticky Controls Section -->
+  <section class="p-4 bg-slate-50 border-b border-slate-200 dark:bg-slate-950 dark:border-slate-900 flex-shrink-0 space-y-3 transition-colors duration-300">
+    <!-- Search Bar -->
+    <div class="relative">
+      <div class="absolute inset-y-0 left-0 pl-3.5 flex items-center pointer-events-none">
+        <svg class="h-4 w-4 text-slate-450 dark:text-slate-500" fill="none" stroke="currentColor" stroke-width="2.5" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
+        </svg>
+      </div>
+      <input type="text" id="ytv-search-input" placeholder="Search saved videos or notes..." class="block w-full pl-10 pr-10 py-2.5 bg-white border border-slate-300 focus:border-rose-500 focus:ring-1 focus:ring-rose-500/50 rounded-xl text-slate-900 placeholder-slate-400 focus:outline-none transition-all duration-300 dark:bg-slate-900/50 dark:border-slate-800 dark:text-slate-100 dark:placeholder-slate-500">
+      
+      <!-- Clear Search Button -->
+      <button id="ytv-search-clear" class="absolute inset-y-0 right-0 pr-3.5 flex items-center text-slate-400 hover:text-slate-655 dark:text-slate-500 dark:hover:text-slate-300 hidden transition-colors">
+        <svg class="h-4.5 w-4.5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" d="M6 18L18 6M6 6l12 12" />
+        </svg>
+      </button>
+    </div>
+
+    <!-- Filters and Sorters -->
+    <div class="flex items-center justify-between text-xs text-slate-550 dark:text-slate-400">
+      <div class="flex items-center space-x-2">
+        <span class="font-medium text-slate-400 dark:text-slate-505 mr-0.5">Sort:</span>
+        <div class="inline-flex rounded-lg border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 p-0.5" id="ytv-sort-group">
+          <button id="ytv-sort-btn-newest" class="px-2.5 py-1 text-[11px] rounded-md font-semibold bg-rose-50 text-rose-600 dark:bg-rose-500/10 dark:text-rose-400 transition-all focus:outline-none">Newest</button>
+          <button id="ytv-sort-btn-oldest" class="px-2 py-1 text-[11px] rounded-md font-medium text-slate-600 hover:text-slate-900 dark:text-slate-400 dark:hover:text-slate-200 transition-all focus:outline-none">Oldest</button>
+          <button id="ytv-sort-btn-az" class="px-2 py-1 text-[11px] rounded-md font-medium text-slate-600 hover:text-slate-900 dark:text-slate-400 dark:hover:text-slate-200 transition-all focus:outline-none">A-Z</button>
+          <button id="ytv-sort-btn-za" class="px-2 py-1 text-[11px] rounded-md font-medium text-slate-600 hover:text-slate-900 dark:text-slate-400 dark:hover:text-slate-200 transition-all focus:outline-none">Z-A</button>
+        </div>
+      </div>
+      
+      <!-- Total Items Counter -->
+      <div id="ytv-total-badge" class="px-2 py-1 bg-white border border-slate-200 dark:bg-slate-900 dark:border-slate-850 rounded-md font-mono text-[10px] text-slate-550 dark:text-slate-400 transition-colors duration-300">
+        0 items
+      </div>
+    </div>
+  </section>
+
+  <!-- Video List Container -->
+  <main id="ytv-videos-list" class="flex-1 overflow-y-auto p-4 space-y-4 bg-slate-50 dark:bg-slate-950 transition-colors duration-300">
+    <!-- Skeleton loader for initial state -->
+    <div id="ytv-loading-skeleton" class="space-y-4">
+      <div class="bg-white border border-slate-200 dark:bg-slate-900/30 dark:border-slate-900/60 rounded-xl p-3 flex space-x-3 animate-pulse">
+        <div class="w-24 h-15 bg-slate-200 dark:bg-slate-900 rounded-lg flex-shrink-0"></div>
+        <div class="flex-1 space-y-2 py-1">
+          <div class="h-3.5 bg-slate-200 dark:bg-slate-900 rounded w-11/12"></div>
+          <div class="h-2.5 bg-slate-200 dark:bg-slate-900 rounded w-2/3"></div>
+          <div class="h-2 bg-slate-200 dark:bg-slate-900 rounded w-1/3 mt-3"></div>
+        </div>
+      </div>
+      <div class="bg-white border border-slate-200 dark:bg-slate-900/30 dark:border-slate-900/60 rounded-xl p-3 flex space-x-3 animate-pulse">
+        <div class="w-24 h-15 bg-slate-200 dark:bg-slate-900 rounded-lg flex-shrink-0"></div>
+        <div class="flex-1 space-y-2 py-1">
+          <div class="h-3.5 bg-slate-200 dark:bg-slate-900 rounded w-10/12"></div>
+          <div class="h-2.5 bg-slate-200 dark:bg-slate-900 rounded w-1/2"></div>
+          <div class="h-2 bg-slate-200 dark:bg-slate-900 rounded w-1/4 mt-3"></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Empty State -->
+    <div id="ytv-empty-state" class="hidden flex flex-col items-center justify-center text-center py-12 px-6 space-y-4">
+      <div class="p-4 bg-white border border-slate-200 dark:bg-slate-900/50 dark:border-slate-850 rounded-2xl shadow-sm dark:shadow-inner text-slate-400 dark:text-slate-500 transition-colors duration-300">
+        <svg class="w-12 h-12 stroke-current" fill="none" stroke-width="1.5" viewBox="0 0 24 24">
+          <circle cx="12" cy="12" r="9" stroke-dasharray="2 2"></circle>
+          <path d="M9 17h6l-3-2.5-3 2.5V7a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v10z" fill="rgba(244, 63, 94, 0.1)"></path>
+          <polyline points="12 8 12 11 14 12"></polyline>
+        </svg>
+      </div>
+      <div>
+        <h3 class="text-base font-semibold text-slate-800 dark:text-slate-200 font-outfit transition-colors">No saved moments yet</h3>
+        <p class="text-xs text-slate-500 mt-1 max-w-[200px] mx-auto leading-relaxed">
+          Open a YouTube video, play it, and click the <span class="text-rose-500 font-semibold dark:text-rose-455">Bookmark</span> button in the player controls to save timestamps!
+        </p>
+      </div>
+    </div>
+  </main>
+
+  <!-- Sleek Status Footer -->
+  <footer class="px-4 py-2.5 bg-slate-100 border-t border-slate-200 text-[10px] text-slate-500 flex items-center justify-between flex-shrink-0 dark:bg-slate-900/40 dark:border-slate-900 transition-colors duration-300">
+    <div class="flex items-center space-x-1">
+      <span class="w-1.5 h-1.5 bg-emerald-500 rounded-full animate-pulse"></span>
+      <span>YTVLater active</span>
+    </div>
+    <span>Version 1.0.0</span>
+  </footer>
+
+  <!-- Script Logic -->
+  <script src="sidepanel.js"></script>
+</body>
+</html>

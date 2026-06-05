@@ -1,0 +1,19 @@
+{
+  "name": "ytvlater",
+  "version": "1.0.0",
+  "description": "Watch YouTube videos later at saved timestamps",
+  "main": "background.js",
+  "keywords": [
+    "YouTube",
+    "Watch Later",
+    "Timestamp",
+    "Bookmark"
+  ],
+  "author": "Sandip Chitale and Gemini",
+  "license": "MIT",
+  "type": "commonjs",
+  "dependencies": {
+    "@tailwindcss/cli": "^4.3.0",
+    "tailwindcss": "^4.3.0"
+  }
+}
