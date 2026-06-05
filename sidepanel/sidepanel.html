@@ -105,8 +105,14 @@
       </div>
       
       <!-- Total Items Counter -->
-      <div id="ytv-total-badge" class="px-2 py-1 bg-white border border-slate-200 dark:bg-slate-900 dark:border-slate-850 rounded-md font-mono text-[10px] text-slate-550 dark:text-slate-400 transition-colors duration-300">
-        0 items
+      <div class="flex items-center gap-2">
+        <span id="ytv-sync-status" class="flex items-center gap-1 text-[10px] text-slate-400 dark:text-slate-500 transition-opacity duration-300" title="Auto-sync status">
+          <span id="ytv-sync-dot" class="w-1.5 h-1.5 rounded-full bg-slate-300 dark:bg-slate-600 transition-colors"></span>
+          <span id="ytv-sync-text"></span>
+        </span>
+        <div id="ytv-total-badge" class="px-2 py-1 bg-white border border-slate-200 dark:bg-slate-900 dark:border-slate-850 rounded-md font-mono text-[10px] text-slate-550 dark:text-slate-400 transition-colors duration-300">
+          0 items
+        </div>
       </div>
     </div>
   </section>

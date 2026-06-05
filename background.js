@@ -55,6 +55,8 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   // are no manual sync buttons. chrome.storage.local is only an invisible cache.
   if (message.action === "AUTO_SYNC_FROM_YOUTUBE") {
     (async () => {
+      // Polls pass allowTabCreate:false so they never spawn a hidden tab.
+      allowManagedTabCreate = message.allowTabCreate !== false;
       try {
         const data = await syncFromYouTubePlaylists(false); // safe merge (LWW)
         sendResponse({ success: true, data });
@@ -64,6 +66,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         sendResponse({ success: false, error: error.message });
       } finally {
         await releaseManagedTab();
+        allowManagedTabCreate = true;
       }
     })();
     return true;
@@ -74,6 +77,11 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 // Tracked so it can be closed afterwards — we never close a tab the user opened.
 let managedTabId = null;
 let managedTabCreatedByUs = false;
+
+// When false, callYoutubeApi will NOT spin up a background YouTube tab if none is
+// open (used by lightweight polling so it never thrashes a hidden tab every few
+// seconds). Defaults to true for saves/updates and the one-shot open/focus sync.
+let allowManagedTabCreate = true;
 
 // Helper: Gather candidate YouTube tabs, ranked by how likely they are to be usable.
 async function getYoutubeTabs() {
@@ -161,8 +169,12 @@ async function callYoutubeApi(action, payload) {
     }
   }
 
-  // No YouTube tab at all — open one in the background to borrow the session.
+  // No YouTube tab at all — open one in the background to borrow the session,
+  // unless the caller forbids it (e.g. background polling).
   if (candidates.length === 0) {
+    if (!allowManagedTabCreate) {
+      throw new Error("No YouTube tab open.");
+    }
     const created = await chrome.tabs.create({ url: "https://www.youtube.com/", active: false });
     managedTabId = created.id;
     managedTabCreatedByUs = true;

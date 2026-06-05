@@ -22,6 +22,11 @@ const videosList = document.getElementById("ytv-videos-list");
 const emptyState = document.getElementById("ytv-empty-state");
 const loadingSkeleton = document.getElementById("ytv-loading-skeleton");
 
+// Auto-sync status indicator
+const syncStatus = document.getElementById("ytv-sync-status");
+const syncDot = document.getElementById("ytv-sync-dot");
+const syncText = document.getElementById("ytv-sync-text");
+
 // Sorting Buttons
 const sortBtnNewest = document.getElementById("ytv-sort-btn-newest");
 const sortBtnOldest = document.getElementById("ytv-sort-btn-oldest");
@@ -44,6 +49,15 @@ let currentSort = "newest"; // "newest", "oldest", "az", "za"
 let searchQuery = "";
 let currentTheme = "auto"; // "auto", "light", "dark"
 
+// Adaptive polling: fast for a short window after open/focus, then back off.
+const POLL_FAST_MS = 5000;
+const POLL_SLOW_MS = 30000;
+const FAST_WINDOW_MS = 30000;
+let pollTimer = null;
+let fastUntil = 0;
+let lastSyncedAt = 0;       // epoch ms of last successful pull
+let lastSignature = null;   // signature of the currently-rendered data
+
 // Initialize
 if (document.readyState === "loading") {
   document.addEventListener("DOMContentLoaded", init);
@@ -57,26 +71,94 @@ async function init() {
   await loadAndRenderVideos();
   // Render the local cache instantly above, then quietly pull the latest state
   // from YouTube so bookmarks saved on other computers show up automatically.
-  autoSyncFromYouTube();
+  await autoSyncFromYouTube(true);
+  startPolling();
 }
 
 // Silent, non-destructive pull from YouTube (the source of truth). There are no
-// sync buttons: this runs automatically on open and whenever the panel regains
-// focus. It never shows an alert — it's expected to be a no-op when offline or
-// not logged in. The UI refreshes via the REFRESH_SAVED_VIDEOS broadcast.
+// sync buttons: this runs automatically on open, on focus, and on a poll timer.
+// It never shows an alert — it's expected to be a no-op when offline or not
+// logged in. The UI refreshes via the REFRESH_SAVED_VIDEOS broadcast.
+//
+// allowTabCreate: true for one-shot open/focus pulls (may open a hidden YouTube
+// tab if none exists); false for background polls (never spawns a tab).
 let autoSyncInFlight = false;
-async function autoSyncFromYouTube() {
+async function autoSyncFromYouTube(allowTabCreate = false) {
   if (autoSyncInFlight) return;
   autoSyncInFlight = true;
-  if (loadingSkeleton) loadingSkeleton.classList.remove("hidden");
+  setSyncStatus("syncing");
   try {
-    await chrome.runtime.sendMessage({ action: "AUTO_SYNC_FROM_YOUTUBE" });
+    const res = await chrome.runtime.sendMessage({
+      action: "AUTO_SYNC_FROM_YOUTUBE",
+      allowTabCreate
+    });
+    if (res && res.success) {
+      lastSyncedAt = Date.now();
+      setSyncStatus("ok");
+    } else {
+      setSyncStatus("idle");
+    }
   } catch (err) {
     console.warn("Auto-sync skipped:", err.message);
+    setSyncStatus("idle");
   } finally {
     autoSyncInFlight = false;
-    if (loadingSkeleton) loadingSkeleton.classList.add("hidden");
   }
+}
+
+// ---- Adaptive polling loop -------------------------------------------------
+
+function scheduleNextPoll() {
+  clearTimeout(pollTimer);
+  const delay = Date.now() < fastUntil ? POLL_FAST_MS : POLL_SLOW_MS;
+  pollTimer = setTimeout(pollTick, delay);
+}
+
+async function pollTick() {
+  if (document.hidden) return; // paused; visibilitychange will restart
+  await autoSyncFromYouTube(false); // polls never create a tab
+  if (!document.hidden) scheduleNextPoll();
+}
+
+function startPolling() {
+  fastUntil = Date.now() + FAST_WINDOW_MS; // enter the fast window
+  scheduleNextPoll();
+}
+
+function stopPolling() {
+  clearTimeout(pollTimer);
+  pollTimer = null;
+}
+
+// ---- Subtle sync status indicator ------------------------------------------
+
+function setSyncStatus(state) {
+  if (!syncStatus || !syncDot || !syncText) return;
+  if (state === "syncing") {
+    syncDot.className = "w-1.5 h-1.5 rounded-full bg-rose-500 animate-pulse transition-colors";
+    syncText.textContent = "Updating…";
+    syncStatus.style.opacity = "1";
+  } else if (state === "ok") {
+    syncDot.className = "w-1.5 h-1.5 rounded-full bg-emerald-500 transition-colors";
+    syncText.textContent = formatSyncedAgo(lastSyncedAt);
+    syncStatus.style.opacity = "1";
+  } else {
+    // idle / offline — keep it muted and unobtrusive
+    syncDot.className = "w-1.5 h-1.5 rounded-full bg-slate-300 dark:bg-slate-600 transition-colors";
+    syncText.textContent = lastSyncedAt ? formatSyncedAgo(lastSyncedAt) : "";
+    syncStatus.style.opacity = lastSyncedAt ? "1" : "0.6";
+  }
+}
+
+function formatSyncedAgo(ts) {
+  if (!ts) return "";
+  const secs = Math.floor((Date.now() - ts) / 1000);
+  if (secs < 5) return "Updated just now";
+  if (secs < 60) return `Updated ${secs}s ago`;
+  const mins = Math.floor(secs / 60);
+  if (mins < 60) return `Updated ${mins}m ago`;
+  const hrs = Math.floor(mins / 60);
+  return `Updated ${hrs}h ago`;
 }
 
 function setupEventListeners() {
@@ -105,17 +187,24 @@ function setupEventListeners() {
   sortBtnAZ.addEventListener("click", () => setSort("az"));
   sortBtnZA.addEventListener("click", () => setSort("za"));
 
-  // Storage updates listener (fires when background/content script saves item)
+  // Storage updates listener (fires when background/content script saves item).
+  // Uses change-detection so frequent polls don't needlessly rebuild the list or
+  // clobber a note the user is mid-typing.
   chrome.runtime.onMessage.addListener((message) => {
     if (message.action === "REFRESH_SAVED_VIDEOS") {
-      loadAndRenderVideos();
+      reloadIfChanged();
     }
   });
 
-  // Re-pull from YouTube whenever the panel becomes visible again (replaces the
-  // old manual "Sync FROM YouTube" button).
-  document.addEventListener("visibilitychange", () => {
-    if (document.visibilityState === "visible") autoSyncFromYouTube();
+  // Re-pull from YouTube whenever the panel becomes visible again, and drive the
+  // adaptive poll loop (replaces the old manual "Sync FROM YouTube" button).
+  document.addEventListener("visibilitychange", async () => {
+    if (document.visibilityState === "visible") {
+      await autoSyncFromYouTube(true); // one-shot pull, may open a tab
+      startPolling();                  // resets the fast window + resumes polling
+    } else {
+      stopPolling();
+    }
   });
 
   // Export
@@ -228,15 +317,55 @@ function setSort(type) {
 // Load videos from local storage and render
 async function loadAndRenderVideos() {
   if (loadingSkeleton) loadingSkeleton.classList.remove("hidden");
-  
+
   try {
     const { savedVideos = [] } = await chrome.storage.local.get("savedVideos");
     savedVideosState = migrateSavedVideos(savedVideos);
+    lastSignature = dataSignature(savedVideosState);
     renderVideos();
   } catch (error) {
     console.error("Failed to load saved videos:", error);
   } finally {
     if (loadingSkeleton) loadingSkeleton.classList.add("hidden");
+  }
+}
+
+// Stable fingerprint of the saved data — used to skip no-op re-renders.
+function dataSignature(videos) {
+  if (!Array.isArray(videos)) return "[]";
+  return JSON.stringify(
+    videos
+      .map(g => [
+        g.videoId,
+        (g.timestamps || [])
+          .map(t => [t.id, t.timestamp, t.savedAt, t.notes || ""])
+          .sort((a, b) => String(a[0]).localeCompare(String(b[0])))
+      ])
+      .sort((a, b) => String(a[0]).localeCompare(String(b[0])))
+  );
+}
+
+// Reload from storage only when the data actually changed, and never while the
+// user is typing a note (avoids wiping their input mid-edit).
+async function reloadIfChanged() {
+  try {
+    const { savedVideos = [] } = await chrome.storage.local.get("savedVideos");
+    const migrated = migrateSavedVideos(savedVideos);
+    const sig = dataSignature(migrated);
+
+    if (sig === lastSignature) return; // nothing changed — no churn
+
+    // Defer if a notes editor is focused; a later poll will pick this up.
+    const active = document.activeElement;
+    if (active && active.tagName === "TEXTAREA" && active.closest(".ytv-card")) {
+      return;
+    }
+
+    savedVideosState = migrated;
+    lastSignature = sig;
+    renderVideos();
+  } catch (error) {
+    console.error("Failed to reload saved videos:", error);
   }
 }
 
