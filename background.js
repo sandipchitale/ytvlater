@@ -202,10 +202,9 @@ async function callYoutubeApi(action, payload) {
 // Helper: Sync all sharded playlists from YouTube and consolidate
 async function syncFromYouTubePlaylists(forcePull = false) {
   try {
-    const listResponse = await callYoutubeApi("LIST_PLAYLISTS", {});
-    const playlists = parsePlaylistsFromBrowse(listResponse);
+    const playlists = await fetchAllPlaylists();
     let ytvPlaylists = playlists.filter(p => p.title === "ytvlater" || p.title.startsWith("ytvlater-"));
-    
+
     // Get local cache to merge and fallback
     let localData = {};
     if (!forcePull) {
@@ -321,6 +320,9 @@ async function syncFromYouTubePlaylists(forcePull = false) {
       }
     }
 
+    console.log(`YTVLater: ${partitionMetadata.length} ytvlater partition(s) read; ` +
+      `reconstructed ${consolidatedVideos.length} video group(s) from their descriptions.`);
+
     // Guard: If we retrieved NO videos at all but we have cached savedVideos, and we have active partitions
     // that failed transiently (returning default empty objects instead of null), we preserve the cache.
     // But if all partitions were deleted (partitionMetadata is empty), we allow it to be empty.
@@ -351,8 +353,7 @@ async function getOrMakeYtvPlaylists() {
   const localData = await chrome.storage.local.get("ytvPlaylists");
   let cachedPlaylists = localData.ytvPlaylists || [];
 
-  const listResponse = await callYoutubeApi("LIST_PLAYLISTS", {});
-  const playlists = parsePlaylistsFromBrowse(listResponse);
+  const playlists = await fetchAllPlaylists();
   let fetchedPlaylists = playlists.filter(p => p.title === "ytvlater" || p.title.startsWith("ytvlater-"));
 
   const mergedMap = new Map();
@@ -842,39 +843,101 @@ async function writeToYouTubePlaylists(videoId, updatedGroup = null) {
 // Traverse InnerTube JSON for playlists
 function parsePlaylistsFromBrowse(data) {
   const playlists = [];
-  
+
+  // Helper: pull a plain string out of YouTube's various text wrappers.
+  function readText(raw) {
+    if (!raw) return "";
+    if (typeof raw === "string") return raw;
+    if (typeof raw.content === "string") return raw.content; // viewModel text
+    if (typeof raw.simpleText === "string") return raw.simpleText;
+    if (Array.isArray(raw.runs) && raw.runs[0]) return raw.runs.map(r => r.text).join("");
+    return "";
+  }
+
   function traverse(obj) {
     if (!obj || typeof obj !== "object") return;
-    
-    if (obj.playlistId && (obj.title || obj.titleText)) {
-      let title = "";
-      const rawTitle = obj.title || obj.titleText;
-      if (typeof rawTitle === "string") {
-        title = rawTitle;
-      } else if (rawTitle && Array.isArray(rawTitle.runs) && rawTitle.runs[0]) {
-        title = rawTitle.runs[0].text;
-      } else if (rawTitle && typeof rawTitle.simpleText === "string") {
-        title = rawTitle.simpleText;
+
+    // NEW format: playlists in the library feed are now lockupViewModel cards,
+    // where the playlist ID is in contentId (not playlistId).
+    if (obj.lockupViewModel && obj.lockupViewModel.contentId) {
+      const lv = obj.lockupViewModel;
+      const isPlaylist =
+        (lv.contentType && lv.contentType.includes("PLAYLIST")) ||
+        /^(PL|VL|LL|WL|FL)/.test(lv.contentId);
+      if (isPlaylist) {
+        const title = readText(lv.metadata?.lockupMetadataViewModel?.title);
+        if (title) {
+          playlists.push({ id: lv.contentId.replace(/^VL/, ""), title: title.trim() });
+        }
+        return; // don't descend into an already-captured card
       }
-      
+    }
+
+    // LEGACY format: playlistRenderer / gridPlaylistRenderer with playlistId.
+    if (obj.playlistId && (obj.title || obj.titleText)) {
+      const title = readText(obj.title || obj.titleText);
       if (title) {
-        playlists.push({
-          id: obj.playlistId,
-          title: title.trim()
-        });
+        playlists.push({ id: obj.playlistId, title: title.trim() });
       }
       return;
     }
-    
+
     for (const key in obj) {
       if (Object.prototype.hasOwnProperty.call(obj, key)) {
         traverse(obj[key]);
       }
     }
   }
-  
+
   traverse(data);
   return playlists;
+}
+
+// Traverse InnerTube JSON for a "load more" continuation token (new + legacy).
+function extractPlaylistContinuation(data) {
+  let token = null;
+
+  function traverse(obj) {
+    if (token || !obj || typeof obj !== "object") return;
+
+    if (obj.continuationCommand && typeof obj.continuationCommand.token === "string") {
+      token = obj.continuationCommand.token;
+      return;
+    }
+    if (obj.nextContinuationData && typeof obj.nextContinuationData.continuation === "string") {
+      token = obj.nextContinuationData.continuation;
+      return;
+    }
+
+    for (const key in obj) {
+      if (Object.prototype.hasOwnProperty.call(obj, key)) {
+        traverse(obj[key]);
+      }
+    }
+  }
+
+  traverse(data);
+  return token;
+}
+
+// Fetch ALL of the user's playlists, following pagination, and de-duplicate.
+async function fetchAllPlaylists() {
+  let all = [];
+  let continuation = null;
+  let pages = 0;
+  do {
+    const data = await callYoutubeApi("LIST_PLAYLISTS", continuation ? { continuation } : {});
+    all = all.concat(parsePlaylistsFromBrowse(data));
+    continuation = extractPlaylistContinuation(data);
+    pages++;
+  } while (continuation && pages < 25); // safety cap
+
+  const byId = new Map();
+  all.forEach(p => byId.set(p.id, p));
+  const unique = Array.from(byId.values());
+  console.log(`YTVLater: listed ${unique.length} playlists across ${pages} page(s); ` +
+    `${unique.filter(p => p.title === "ytvlater" || p.title.startsWith("ytvlater-")).length} match ytvlater-*`);
+  return unique;
 }
 
 // Traverse InnerTube JSON for description metadata

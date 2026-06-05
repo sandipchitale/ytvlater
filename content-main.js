@@ -105,7 +105,12 @@ async function handleApiRequest(action, payload) {
   switch (action) {
     case "LIST_PLAYLISTS":
       endpoint = "/youtubei/v1/browse";
-      requestBody.browseId = "FEplaylist_aggregation";
+      // Follow pagination when a continuation token is supplied.
+      if (payload && payload.continuation) {
+        requestBody.continuation = payload.continuation;
+      } else {
+        requestBody.browseId = "FEplaylist_aggregation";
+      }
       break;
 
     case "GET_PLAYLIST":
