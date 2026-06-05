@@ -32,7 +32,8 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       .catch((error) => {
         console.error("Error saving video:", error);
         sendResponse({ success: false, error: error.message });
-      });
+      })
+      .finally(() => releaseManagedTab());
     return true; // Keep channel open for async response
   }
 
@@ -44,60 +45,158 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       .catch((error) => {
         console.error("Error updating video:", error);
         sendResponse({ success: false, error: error.message });
-      });
+      })
+      .finally(() => releaseManagedTab());
     return true;
   }
 
-  if (message.action === "SYNC_FROM_YOUTUBE") {
+  // Silent, non-destructive pull from YouTube (the single source of truth).
+  // Triggered automatically when the side panel opens or regains focus — there
+  // are no manual sync buttons. chrome.storage.local is only an invisible cache.
+  if (message.action === "AUTO_SYNC_FROM_YOUTUBE") {
     (async () => {
       try {
-        const data = await syncFromYouTubePlaylists(true); // forcePull = true
+        const data = await syncFromYouTubePlaylists(false); // safe merge (LWW)
         sendResponse({ success: true, data });
       } catch (error) {
-        console.error("Error syncing from YouTube:", error);
+        // Failures are expected when offline / not logged in — keep quiet.
+        console.warn("Auto-sync from YouTube skipped:", error.message);
         sendResponse({ success: false, error: error.message });
+      } finally {
+        await releaseManagedTab();
       }
     })();
     return true;
   }
-
-  if (message.action === "SYNC_TO_YOUTUBE") {
-    enqueueWrite(async () => {
-      return await syncToYouTubePlaylists();
-    })
-      .then((data) => sendResponse({ success: true, data }))
-      .catch((error) => {
-        console.error("Error syncing to YouTube:", error);
-        sendResponse({ success: false, error: error.message });
-      });
-    return true;
-  }
 });
 
-// Helper: Query the active YouTube tab's content script to invoke InnerTube APIs
-async function callYoutubeApi(action, payload) {
+// A YouTube tab YTVLater opened on demand (e.g. when none was available for sync).
+// Tracked so it can be closed afterwards — we never close a tab the user opened.
+let managedTabId = null;
+let managedTabCreatedByUs = false;
+
+// Helper: Gather candidate YouTube tabs, ranked by how likely they are to be usable.
+async function getYoutubeTabs() {
   const tabs = await chrome.tabs.query({ url: "*://*.youtube.com/*" });
-  if (tabs.length === 0) {
-    throw new Error("No open YouTube tabs found. YTVLater requires at least one active YouTube tab to query your account.");
+
+  const score = (tab) => {
+    let s = 0;
+    if (tab.status === "complete") s += 8;
+    const url = tab.url || "";
+    if (url.includes("//www.youtube.com")) s += 4; // prefer main site over music./studio.
+    if (url.includes("/watch")) s += 2;
+    if (tab.active) s += 1;
+    return s;
+  };
+
+  return tabs.slice().sort((a, b) => score(b) - score(a));
+}
+
+// Helper: Wait until a tab has finished loading (so window.ytcfg is available).
+async function waitForTabComplete(tabId, timeoutMs = 10000) {
+  const start = Date.now();
+  while (Date.now() - start < timeoutMs) {
+    let tab;
+    try {
+      tab = await chrome.tabs.get(tabId);
+    } catch (_) {
+      throw new Error("YouTube tab was closed before it finished loading.");
+    }
+    if (tab.status === "complete") {
+      // Short settle delay; content-main.js also retries until ytcfg is ready.
+      await new Promise((r) => setTimeout(r, 600));
+      return;
+    }
+    await new Promise((r) => setTimeout(r, 250));
   }
-  
-  // Try sending the request to the first active YouTube tab
-  const response = await chrome.tabs.sendMessage(tabs[0].id, {
-    action: "YTV_API_CALL",
-    apiAction: action,
-    payload: payload
-  }).catch((err) => {
-    console.warn("Failed sending message to YouTube tab:", err);
-    return null;
-  });
-  
-  if (!response) {
-    throw new Error("Unable to communicate with the YouTube tab. Please refresh your YouTube tab and try again.");
+}
+
+// Helper: Make sure both content scripts are live in a tab, injecting on demand.
+async function ensureContentScript(tabId) {
+  const ping = await chrome.tabs
+    .sendMessage(tabId, { action: "YTV_PING" })
+    .catch(() => null);
+  if (ping && ping.ok) return true;
+
+  // Tab predates the extension (or a reload) — inject the scripts ourselves.
+  try {
+    await chrome.scripting.executeScript({ target: { tabId }, files: ["content.js"] });
+    await chrome.scripting.executeScript({ target: { tabId }, world: "MAIN", files: ["content-main.js"] });
+  } catch (err) {
+    console.warn(`Failed to inject content scripts into tab ${tabId}:`, err.message);
+    return false;
   }
-  if (!response.success) {
-    throw new Error(response.error || "YouTube API error.");
+
+  const ping2 = await chrome.tabs
+    .sendMessage(tabId, { action: "YTV_PING" })
+    .catch(() => null);
+  return !!(ping2 && ping2.ok);
+}
+
+// Helper: Close the tab we opened for sync (if any). Never touches user tabs.
+async function releaseManagedTab() {
+  if (managedTabId !== null && managedTabCreatedByUs) {
+    const idToClose = managedTabId;
+    managedTabId = null;
+    managedTabCreatedByUs = false;
+    await chrome.tabs.remove(idToClose).catch(() => {});
+  } else {
+    managedTabId = null;
+    managedTabCreatedByUs = false;
   }
-  return response.data;
+}
+
+// Helper: Invoke an InnerTube API via any usable YouTube tab, self-healing as needed.
+async function callYoutubeApi(action, payload) {
+  let candidates = await getYoutubeTabs();
+
+  // Reuse a managed tab we already created in this operation, if still alive.
+  if (managedTabId !== null && !candidates.some((t) => t.id === managedTabId)) {
+    try {
+      const managed = await chrome.tabs.get(managedTabId);
+      candidates.unshift(managed);
+    } catch (_) {
+      managedTabId = null;
+      managedTabCreatedByUs = false;
+    }
+  }
+
+  // No YouTube tab at all — open one in the background to borrow the session.
+  if (candidates.length === 0) {
+    const created = await chrome.tabs.create({ url: "https://www.youtube.com/", active: false });
+    managedTabId = created.id;
+    managedTabCreatedByUs = true;
+    await waitForTabComplete(created.id);
+    candidates = [created];
+  }
+
+  let lastError = null;
+  for (const tab of candidates) {
+    try {
+      const ok = await ensureContentScript(tab.id);
+      if (!ok) {
+        lastError = new Error("Content script unreachable in YouTube tab.");
+        continue;
+      }
+      const response = await chrome.tabs.sendMessage(tab.id, {
+        action: "YTV_API_CALL",
+        apiAction: action,
+        payload: payload
+      });
+      if (response && response.success) {
+        return response.data;
+      }
+      lastError = new Error(response?.error || "YouTube API error.");
+    } catch (err) {
+      lastError = err;
+    }
+  }
+
+  throw new Error(
+    lastError
+      ? `Unable to reach YouTube: ${lastError.message}`
+      : "Unable to reach YouTube. Open a YouTube tab and ensure you are logged in."
+  );
 }
 
 // Helper: Sync all sharded playlists from YouTube and consolidate
@@ -242,150 +341,6 @@ async function syncFromYouTubePlaylists(forcePull = false) {
     return consolidatedVideos;
   } catch (error) {
     console.error("Sync error:", error);
-    throw error;
-  }
-}
-
-// Helper: Sync all local saved videos TO YouTube, merging with YouTube's live partitions
-async function syncToYouTubePlaylists() {
-  try {
-    // 1. Get the current local savedVideos
-    const localData = await chrome.storage.local.get("savedVideos");
-    const localSavedVideos = localData.savedVideos || [];
-
-    // 2. Fetch fresh playlists and metadata from YouTube first (Clean Force Pull)
-    const youtubeSavedVideos = await syncFromYouTubePlaylists(true);
-    
-    // 3. Load updated partitionMetadata and ytvPlaylists from storage
-    const storage = await chrome.storage.local.get(["partitionMetadata", "ytvPlaylists"]);
-    let partitionMetadata = storage.partitionMetadata || [];
-    let ytvPlaylists = storage.ytvPlaylists || [];
-
-    // 4. Merge local savedVideos into the YouTube list
-    const mergedVideos = [...youtubeSavedVideos];
-    for (const localGroup of localSavedVideos) {
-      const ytGroup = mergedVideos.find(g => g.videoId === localGroup.videoId);
-      if (!ytGroup) {
-        mergedVideos.push(localGroup);
-      } else {
-        if (Array.isArray(localGroup.timestamps)) {
-          localGroup.timestamps.forEach(localTs => {
-            const ytTs = ytGroup.timestamps.find(t => t.id === localTs.id);
-            if (!ytTs) {
-              ytGroup.timestamps.push(localTs);
-            } else {
-              // Merge notes if local has one and YouTube doesn't
-              if (localTs.notes && !ytTs.notes) {
-                ytTs.notes = localTs.notes;
-              }
-            }
-          });
-        }
-      }
-    }
-
-    // 5. Redistribute mergedVideos into partitionMetadata
-    if (partitionMetadata.length === 0) {
-      const ytvPlaylistsFresh = await getOrMakeYtvPlaylists();
-      const storageFresh = await chrome.storage.local.get(["partitionMetadata", "ytvPlaylists"]);
-      partitionMetadata = storageFresh.partitionMetadata || [];
-      ytvPlaylists = storageFresh.ytvPlaylists || [];
-    }
-
-    // Clear video groups from existing partitions to perform clean redistribution
-    partitionMetadata.forEach(part => {
-      part.videos = [];
-    });
-
-    // Distribute each merged video group to the partitions
-    for (const group of mergedVideos) {
-      let placed = false;
-      for (const part of partitionMetadata) {
-        const testVideos = [...part.videos, group];
-        const testWrapper = {
-          sequence: part.sequence || 1,
-          createdAt: part.createdAt || Date.now(),
-          videos: testVideos
-        };
-        const testJson = `[YTVLATER]${JSON.stringify(testWrapper)}[/YTVLATER]`;
-        if (testJson.length <= 4500) {
-          part.videos.push(group);
-          placed = true;
-          break;
-        }
-      }
-
-      if (!placed) {
-        // Create a new partition
-        const uuid = crypto.randomUUID();
-        const newTitle = `ytvlater-${uuid}`;
-        const createRes = await callYoutubeApi("CREATE_PLAYLIST", { title: newTitle });
-        const newPlaylistId = createRes?.playlistId;
-        if (!newPlaylistId) {
-          throw new Error(`Failed to create new playlist partition ${newTitle} on YouTube.`);
-        }
-
-        const activePartition = partitionMetadata[partitionMetadata.length - 1];
-        const nextSeq = (activePartition ? activePartition.sequence : 0) + 1;
-        const newPartition = {
-          playlistId: newPlaylistId,
-          playlistTitle: newTitle,
-          sequence: nextSeq,
-          createdAt: Date.now(),
-          updatedAt: Date.now(),
-          videos: [group],
-          videoSetIds: {}
-        };
-        partitionMetadata.push(newPartition);
-
-        ytvPlaylists.push({ id: newPlaylistId, title: newTitle });
-        await chrome.storage.local.set({ ytvPlaylists });
-      }
-    }
-
-    // 6. Write the redistributed metadata back to YouTube partitions
-    for (const part of partitionMetadata) {
-      part.updatedAt = Date.now();
-      const wrapper = {
-        sequence: part.sequence || 1,
-        createdAt: part.createdAt || Date.now(),
-        updatedAt: part.updatedAt,
-        videos: part.videos
-      };
-      const descText = `[YTVLATER]${JSON.stringify(wrapper)}[/YTVLATER]`;
-
-      // Update description on YouTube
-      await callYoutubeApi("SET_DESCRIPTION", { playlistId: part.playlistId, description: descText });
-
-      // Get current physical videos in the playlist to see if we need to ADD_VIDEO
-      let freshDetails = await callYoutubeApi("GET_PLAYLIST", { playlistId: part.playlistId });
-      part.videoSetIds = parseVideoSetIds(freshDetails);
-
-      // Physical additions
-      for (const group of part.videos) {
-        if (!part.videoSetIds[group.videoId]) {
-          await callYoutubeApi("ADD_VIDEO", { playlistId: part.playlistId, videoId: group.videoId }).catch(console.error);
-        }
-      }
-
-      // Refresh videoSetIds after additions
-      freshDetails = await callYoutubeApi("GET_PLAYLIST", { playlistId: part.playlistId });
-      part.videoSetIds = parseVideoSetIds(freshDetails);
-    }
-
-    // 7. Save everything back to local storage
-    await chrome.storage.local.set({
-      savedVideos: mergedVideos,
-      partitionMetadata: partitionMetadata,
-      ytvPlaylists: ytvPlaylists
-    });
-
-    // Broadcast refresh to sidepanel UI
-    chrome.runtime.sendMessage({ action: "REFRESH_SAVED_VIDEOS" }).catch(() => {});
-
-    return mergedVideos;
-  } catch (error) {
-    console.error("Sync to YouTube error:", error);
     throw error;
   }
 }

@@ -1,5 +1,12 @@
 // Main World Content Script (runs in page context to access window.ytcfg)
 
+// Guard against double-execution (manifest auto-injection + on-demand injection
+// by the background worker for tabs that predate the extension).
+if (window.__YTV_MAIN_LOADED__) {
+  console.log("YTVLater: Main-world script already loaded, skipping re-init.");
+} else {
+  window.__YTV_MAIN_LOADED__ = true;
+
 console.log("YTVLater: Main-world script initialized.");
 
 document.addEventListener("YTV_API_REQUEST", async (event) => {
@@ -17,9 +24,28 @@ document.addEventListener("YTV_API_REQUEST", async (event) => {
   }
 });
 
+// Wait until window.ytcfg exposes the InnerTube API key. On a freshly-opened tab
+// the page may still be booting when the first request arrives.
+async function waitForYtcfg(timeoutMs = 5000) {
+  const start = Date.now();
+  const getKey = () =>
+    window.ytcfg?.get?.("INNERTUBE_API_KEY") ||
+    window.ytcfg?.data_?.INNERTUBE_API_KEY ||
+    window.ytcfg?.data?.INNERTUBE_API_KEY ||
+    window.yt?.config_?.INNERTUBE_API_KEY;
+
+  while (Date.now() - start < timeoutMs) {
+    if (getKey()) return;
+    await new Promise((r) => setTimeout(r, 200));
+  }
+}
+
 async function handleApiRequest(action, payload) {
+  // Ensure YouTube's config is available before reading credentials from it.
+  await waitForYtcfg();
+
   // Check if the user is logged into YouTube
-  const isLoggedIn = window.ytcfg?.get?.("LOGGED_IN") || 
+  const isLoggedIn = window.ytcfg?.get?.("LOGGED_IN") ||
                      window.ytcfg?.data_?.LOGGED_IN || 
                      window.ytcfg?.data?.LOGGED_IN ||
                      window.yt?.config_?.LOGGED_IN;
@@ -207,3 +233,5 @@ async function getSapisidHash(sapisid, origin) {
   const sha1Hash = await sha1(hashInput);
   return `${time}_${sha1Hash}`;
 }
+
+} // end __YTV_MAIN_LOADED__ guard

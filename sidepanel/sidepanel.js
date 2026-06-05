@@ -32,8 +32,6 @@ const sortBtnZA = document.getElementById("ytv-sort-btn-za");
 const importBtn = document.getElementById("ytv-import-btn");
 const importFile = document.getElementById("ytv-import-file");
 const exportBtn = document.getElementById("ytv-export-btn");
-const syncFromBtn = document.getElementById("ytv-sync-from-btn");
-const syncToBtn = document.getElementById("ytv-sync-to-btn");
 
 // Theme Buttons
 const themeBtnAuto = document.getElementById("ytv-theme-btn-auto");
@@ -57,6 +55,28 @@ async function init() {
   setupEventListeners();
   await loadTheme();
   await loadAndRenderVideos();
+  // Render the local cache instantly above, then quietly pull the latest state
+  // from YouTube so bookmarks saved on other computers show up automatically.
+  autoSyncFromYouTube();
+}
+
+// Silent, non-destructive pull from YouTube (the source of truth). There are no
+// sync buttons: this runs automatically on open and whenever the panel regains
+// focus. It never shows an alert — it's expected to be a no-op when offline or
+// not logged in. The UI refreshes via the REFRESH_SAVED_VIDEOS broadcast.
+let autoSyncInFlight = false;
+async function autoSyncFromYouTube() {
+  if (autoSyncInFlight) return;
+  autoSyncInFlight = true;
+  if (loadingSkeleton) loadingSkeleton.classList.remove("hidden");
+  try {
+    await chrome.runtime.sendMessage({ action: "AUTO_SYNC_FROM_YOUTUBE" });
+  } catch (err) {
+    console.warn("Auto-sync skipped:", err.message);
+  } finally {
+    autoSyncInFlight = false;
+    if (loadingSkeleton) loadingSkeleton.classList.add("hidden");
+  }
 }
 
 function setupEventListeners() {
@@ -92,9 +112,11 @@ function setupEventListeners() {
     }
   });
 
-  // Sync
-  if (syncFromBtn) syncFromBtn.addEventListener("click", () => syncWithYouTube("SYNC_FROM_YOUTUBE"));
-  if (syncToBtn) syncToBtn.addEventListener("click", () => syncWithYouTube("SYNC_TO_YOUTUBE"));
+  // Re-pull from YouTube whenever the panel becomes visible again (replaces the
+  // old manual "Sync FROM YouTube" button).
+  document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState === "visible") autoSyncFromYouTube();
+  });
 
   // Export
   exportBtn.addEventListener("click", exportBackup);
@@ -214,38 +236,6 @@ async function loadAndRenderVideos() {
   } catch (error) {
     console.error("Failed to load saved videos:", error);
   } finally {
-    if (loadingSkeleton) loadingSkeleton.classList.add("hidden");
-  }
-}
-
-// Sync bookmarks with YouTube
-async function syncWithYouTube(action = "SYNC_FROM_YOUTUBE") {
-  const activeBtn = action === "SYNC_FROM_YOUTUBE" ? syncFromBtn : syncToBtn;
-  if (!activeBtn) return;
-  activeBtn.disabled = true;
-  
-  // Create rotation style if not exists
-  const svg = activeBtn.querySelector("svg");
-  if (svg) svg.style.animation = "spin 1s linear infinite";
-  if (loadingSkeleton) loadingSkeleton.classList.remove("hidden");
-  
-  try {
-    const response = await chrome.runtime.sendMessage({ action });
-    if (response && response.success) {
-      savedVideosState = response.data || [];
-      renderVideos();
-      if (action === "SYNC_TO_YOUTUBE") {
-        alert("Successfully merged and synced all local bookmarks to YouTube!");
-      }
-    } else {
-      alert("Sync failed: " + (response?.error || "Ensure a YouTube tab is open and you are logged in."));
-    }
-  } catch (err) {
-    console.error("Sync message failed:", err);
-    alert("Sync failed: " + err.message);
-  } finally {
-    activeBtn.disabled = false;
-    if (svg) svg.style.animation = "";
     if (loadingSkeleton) loadingSkeleton.classList.add("hidden");
   }
 }

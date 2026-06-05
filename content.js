@@ -1,5 +1,14 @@
 // Content Script for YouTube integration
 
+// Guard against double-execution. This script auto-injects via the manifest, but
+// the background worker may also inject it on demand (chrome.scripting) into tabs
+// that predate the extension. Without this guard we'd register duplicate listeners
+// and inject duplicate save buttons.
+if (window.__YTV_CONTENT_LOADED__) {
+  console.log("YTVLater: content script already loaded, skipping re-init.");
+} else {
+  window.__YTV_CONTENT_LOADED__ = true;
+
 // Keep track of the current video ID to handle page changes
 let currentVideoId = "";
 
@@ -19,7 +28,10 @@ function init() {
 
   // 3. Listen for messages from background script or sidepanel
   chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
-    if (message.action === "GET_VIDEO_STATE") {
+    if (message.action === "YTV_PING") {
+      sendResponse({ ok: true });
+      return true;
+    } else if (message.action === "GET_VIDEO_STATE") {
       const state = getVideoState();
       if (state) {
         sendResponse({ success: true, data: state });
@@ -299,3 +311,5 @@ function showToast(seconds, videoTitle) {
     }, 250);
   }, 2800);
 }
+
+} // end __YTV_CONTENT_LOADED__ guard
