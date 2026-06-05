@@ -10,7 +10,7 @@ document.addEventListener("YTV_API_REQUEST", async (event) => {
       detail: { requestId, success: true, data: responseData }
     }));
   } catch (error) {
-    console.error(`YTVLater API error on action ${action}:`, error);
+    console.warn(`YTVLater API error on action ${action}:`, error);
     document.dispatchEvent(new CustomEvent("YTV_API_RESPONSE", {
       detail: { requestId, success: false, error: error.message }
     }));

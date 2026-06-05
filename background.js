@@ -286,7 +286,9 @@ async function saveVideoToStorage(data) {
       thumbnailUrl: `https://img.youtube.com/vi/${videoId}/mqdefault.jpg`,
       timestamps: []
     };
-    savedVideos.push(videoGroup);
+  } else {
+    // Clone to avoid mutating in-flight storage data
+    videoGroup = JSON.parse(JSON.stringify(videoGroup));
   }
 
   if (title) videoGroup.title = title;
@@ -301,11 +303,32 @@ async function saveVideoToStorage(data) {
     });
   }
 
-  // Perform sharded write to YouTube using local cache as source of truth
+  // Perform sharded write to YouTube (may trigger self-healing cache repair)
   await writeToYouTubePlaylists(videoId, videoGroup);
 
+  // Reload the clean, potentially self-healed savedVideos list
+  const freshStorageData = await chrome.storage.local.get("savedVideos");
+  const freshSavedVideos = freshStorageData.savedVideos || [];
+
+  // Update the fresh list with our videoGroup changes
+  let freshVideoGroup = freshSavedVideos.find(g => g.videoId === videoId);
+  if (!freshVideoGroup) {
+    freshSavedVideos.push(videoGroup);
+  } else {
+    freshVideoGroup.title = videoGroup.title;
+    freshVideoGroup.channelTitle = videoGroup.channelTitle;
+    freshVideoGroup.thumbnailUrl = videoGroup.thumbnailUrl;
+    
+    // Merge timestamps ensuring no duplicates
+    videoGroup.timestamps.forEach(ts => {
+      if (!freshVideoGroup.timestamps.some(t => t.id === ts.id)) {
+        freshVideoGroup.timestamps.push(ts);
+      }
+    });
+  }
+
   // Update local storage cache
-  await chrome.storage.local.set({ savedVideos });
+  await chrome.storage.local.set({ savedVideos: freshSavedVideos });
   
   // Broadcast update
   chrome.runtime.sendMessage({ action: "REFRESH_SAVED_VIDEOS" }).catch(() => {});
@@ -313,26 +336,33 @@ async function saveVideoToStorage(data) {
 
 // Helper: Update notes or delete a timestamp
 async function updateVideoInStorage(videoId, updatedGroup) {
-  const storageData = await chrome.storage.local.get("savedVideos");
-  const savedVideos = storageData.savedVideos || [];
-  
-  const idx = savedVideos.findIndex(g => g.videoId === videoId);
+  // Perform sharded write to YouTube (may trigger self-healing cache repair)
+  await writeToYouTubePlaylists(videoId, updatedGroup);
+
+  // Reload the clean, potentially self-healed savedVideos list
+  const freshStorageData = await chrome.storage.local.get("savedVideos");
+  const freshSavedVideos = freshStorageData.savedVideos || [];
+
+  const idx = freshSavedVideos.findIndex(g => g.videoId === videoId);
   if (idx !== -1) {
     if (!updatedGroup || !updatedGroup.timestamps || updatedGroup.timestamps.length === 0) {
-      savedVideos.splice(idx, 1);
+      freshSavedVideos.splice(idx, 1);
     } else {
-      savedVideos[idx] = updatedGroup;
+      freshSavedVideos[idx] = updatedGroup;
+    }
+  } else {
+    // If not found (e.g. self-healed / deleted), push it only if it has timestamps
+    if (updatedGroup && updatedGroup.timestamps && updatedGroup.timestamps.length > 0) {
+      freshSavedVideos.push(updatedGroup);
     }
   }
 
-  // Update sharded playlist using local cache as source of truth
-  await writeToYouTubePlaylists(videoId, updatedGroup);
-
   // Update local storage cache
-  await chrome.storage.local.set({ savedVideos });
+  await chrome.storage.local.set({ savedVideos: freshSavedVideos });
   
   chrome.runtime.sendMessage({ action: "REFRESH_SAVED_VIDEOS" }).catch(() => {});
 }
+
 
 // Helper: Perform playlist sharded writing to YouTube using local cache as source of truth
 async function writeToYouTubePlaylists(videoId, updatedGroup = null) {
