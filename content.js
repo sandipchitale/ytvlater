@@ -6,6 +6,8 @@ let currentVideoId = "";
 // Initialize
 init();
 
+const pendingRequests = new Map();
+
 function init() {
   // 1. Setup periodic checks to inject the button (handles SPA navigation robustly)
   setInterval(checkForVideoPage, 1500);
@@ -27,10 +29,50 @@ function init() {
     } else if (message.action === "SEEK_TO_TIMESTAMP") {
       const success = seekTo(message.timestamp);
       sendResponse({ success });
+    } else if (message.action === "YTV_API_CALL") {
+      executeApiCall(message.apiAction, message.payload)
+        .then(data => sendResponse({ success: true, data }))
+        .catch(error => sendResponse({ success: false, error: error.message }));
+      return true; // Keep channel open for async response
     }
     return true; // Keep channel open for async response
   });
+
+  // 4. Listen for response from main world script
+  document.addEventListener("YTV_API_RESPONSE", (event) => {
+    const { requestId, success, data, error } = event.detail;
+    if (pendingRequests.has(requestId)) {
+      const { resolve, reject } = pendingRequests.get(requestId);
+      pendingRequests.delete(requestId);
+      if (success) {
+        resolve(data);
+      } else {
+        reject(new Error(error));
+      }
+    }
+  });
 }
+
+function executeApiCall(action, payload) {
+  return new Promise((resolve, reject) => {
+    const requestId = `req-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+    pendingRequests.set(requestId, { resolve, reject });
+
+    document.dispatchEvent(new CustomEvent("YTV_API_REQUEST", {
+      detail: { requestId, action, payload }
+    }));
+    
+    // Auto-timeout after 15 seconds to prevent leaks
+    setTimeout(() => {
+      if (pendingRequests.has(requestId)) {
+        const req = pendingRequests.get(requestId);
+        pendingRequests.delete(requestId);
+        req.reject(new Error("Request to YouTube page context timed out. Please refresh the page."));
+      }
+    }, 15000);
+  });
+}
+
 
 // Check if we are on a watch page and inject the button
 function checkForVideoPage() {

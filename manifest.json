@@ -1,7 +1,6 @@
 {
   "manifest_version": 3,
   "name": "YTVLater",
-  "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAt3zhBzt7WI6mYhZFq1pF6J8/N0u0/RI3SoJ4gCpNNe50p+pZrT++6DF7IctvW93feWzrmN96OVBVQ6LouCfVxA1QZM+MtSTi8ObIAx2q4Hqf4U1MYVE81HSKZSX6WYWoZQ2UQrLQkk1Kf4VLEkYN3Vi/Bz7HGo3vmnIbQAyHK4S5jO20aIHvL3XsTZI60DndVlu/0qVfat0aMly3vLjfiVptNzjENUYwXcB9lt2f11G/y1wkS65f4ShjPPA/UbH/jdrXmSlKkVTvG2RefQEaXR65u5Y8BkdF8uzV/C+wgR8lp9a5REnYmjuEcsG5PTvqOr6zwcpnYDoJaof8NOcdVQIDAQAB",
   "version": "1.0.0",
   "description": "Save YouTube videos at their current timestamp to watch later, right from your sidebar.",
   "icons": {
@@ -42,6 +41,16 @@
         "content.js"
       ],
       "run_at": "document_idle"
+    },
+    {
+      "matches": [
+        "*://*.youtube.com/*"
+      ],
+      "js": [
+        "content-main.js"
+      ],
+      "run_at": "document_start",
+      "world": "MAIN"
     }
   ]
 }

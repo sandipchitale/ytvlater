@@ -32,6 +32,7 @@ const sortBtnZA = document.getElementById("ytv-sort-btn-za");
 const importBtn = document.getElementById("ytv-import-btn");
 const importFile = document.getElementById("ytv-import-file");
 const exportBtn = document.getElementById("ytv-export-btn");
+const syncBtn = document.getElementById("ytv-sync-btn");
 
 // Theme Buttons
 const themeBtnAuto = document.getElementById("ytv-theme-btn-auto");
@@ -90,6 +91,9 @@ function setupEventListeners() {
     }
   });
 
+  // Sync
+  if (syncBtn) syncBtn.addEventListener("click", syncWithYouTube);
+
   // Export
   exportBtn.addEventListener("click", exportBackup);
 
@@ -113,7 +117,7 @@ function setupEventListeners() {
 // Load and apply theme preference
 async function loadTheme() {
   try {
-    const { themePreference = "auto" } = await chrome.storage.sync.get("themePreference");
+    const { themePreference = "auto" } = await chrome.storage.local.get("themePreference");
     setTheme(themePreference);
   } catch (error) {
     console.error("Failed to load theme preference:", error);
@@ -148,7 +152,7 @@ function setTheme(theme) {
 // Change theme preference and save to storage
 function changeTheme(theme) {
   setTheme(theme);
-  chrome.storage.sync.set({ themePreference: theme }).catch(err => {
+  chrome.storage.local.set({ themePreference: theme }).catch(err => {
     console.error("Failed to save theme preference:", err);
   });
 }
@@ -197,19 +201,45 @@ function setSort(type) {
   renderVideos();
 }
 
-// Load videos from sync storage and render
+// Load videos from local storage and render
 async function loadAndRenderVideos() {
   if (loadingSkeleton) loadingSkeleton.classList.remove("hidden");
   
   try {
-    const { savedVideos = [] } = await chrome.storage.sync.get("savedVideos");
+    const { savedVideos = [] } = await chrome.storage.local.get("savedVideos");
     savedVideosState = migrateSavedVideos(savedVideos);
-    // Write back the migrated structure
-    await chrome.storage.sync.set({ savedVideos: savedVideosState });
     renderVideos();
   } catch (error) {
     console.error("Failed to load saved videos:", error);
   } finally {
+    if (loadingSkeleton) loadingSkeleton.classList.add("hidden");
+  }
+}
+
+// Sync bookmarks with YouTube
+async function syncWithYouTube() {
+  if (!syncBtn) return;
+  syncBtn.disabled = true;
+  
+  // Create rotation style if not exists
+  const svg = syncBtn.querySelector("svg");
+  if (svg) svg.style.animation = "spin 1s linear infinite";
+  if (loadingSkeleton) loadingSkeleton.classList.remove("hidden");
+  
+  try {
+    const response = await chrome.runtime.sendMessage({ action: "SYNC_VIDEOS" });
+    if (response && response.success) {
+      savedVideosState = response.data || [];
+      renderVideos();
+    } else {
+      alert("Sync failed: " + (response?.error || "Ensure a YouTube tab is open and you are logged in."));
+    }
+  } catch (err) {
+    console.error("Sync message failed:", err);
+    alert("Sync failed: " + err.message);
+  } finally {
+    syncBtn.disabled = false;
+    if (svg) svg.style.animation = "";
     if (loadingSkeleton) loadingSkeleton.classList.add("hidden");
   }
 }
@@ -511,41 +541,64 @@ async function playSavedVideo(item) {
 
 // Update specific video notes in storage
 async function updateVideoNotes(id, newNotes) {
+  let targetGroup = null;
+  let videoId = "";
   let changed = false;
+  
   savedVideosState.forEach(group => {
     if (group.timestamps) {
       const t = group.timestamps.find(x => x.id === id);
       if (t) {
         t.notes = newNotes;
+        targetGroup = group;
+        videoId = group.videoId;
         changed = true;
       }
     }
   });
 
   if (changed) {
-    await chrome.storage.sync.set({ savedVideos: savedVideosState });
+    await chrome.storage.local.set({ savedVideos: savedVideosState });
     renderVideos();
+    
+    // Dispatch sharded playlist update
+    chrome.runtime.sendMessage({
+      action: "UPDATE_VIDEO",
+      videoId: videoId,
+      updatedGroup: targetGroup
+    });
   }
 }
 
 // Delete video from storage
 async function deleteVideo(id) {
+  let targetGroup = null;
+  let videoId = "";
   let changed = false;
+  
   savedVideosState.forEach(group => {
     if (group.timestamps) {
       const index = group.timestamps.findIndex(x => x.id === id);
       if (index !== -1) {
         group.timestamps.splice(index, 1);
+        targetGroup = group;
+        videoId = group.videoId;
         changed = true;
       }
     }
   });
 
   if (changed) {
-    // Filter out empty video groups
     savedVideosState = savedVideosState.filter(group => group.timestamps && group.timestamps.length > 0);
-    await chrome.storage.sync.set({ savedVideos: savedVideosState });
+    await chrome.storage.local.set({ savedVideos: savedVideosState });
     renderVideos();
+    
+    // Dispatch sharded playlist update
+    chrome.runtime.sendMessage({
+      action: "UPDATE_VIDEO",
+      videoId: videoId,
+      updatedGroup: targetGroup && targetGroup.timestamps.length > 0 ? targetGroup : null
+    });
   }
 }
 
@@ -554,8 +607,15 @@ async function deleteVideoGroup(videoId) {
   const originalLength = savedVideosState.length;
   savedVideosState = savedVideosState.filter(group => group.videoId !== videoId);
   if (savedVideosState.length !== originalLength) {
-    await chrome.storage.sync.set({ savedVideos: savedVideosState });
+    await chrome.storage.local.set({ savedVideos: savedVideosState });
     renderVideos();
+    
+    // Dispatch sharded playlist update (null triggers removal from partitions)
+    chrome.runtime.sendMessage({
+      action: "UPDATE_VIDEO",
+      videoId: videoId,
+      updatedGroup: null
+    });
   }
 }
 
@@ -595,14 +655,12 @@ function importBackup(e) {
       const data = JSON.parse(event.target.result);
       const importedGrouped = migrateSavedVideos(data);
       
-      // Merge imported grouped entries with existing state
       const merged = [...savedVideosState];
       importedGrouped.forEach(impGroup => {
         const existingGroup = merged.find(g => g.videoId === impGroup.videoId);
         if (!existingGroup) {
           merged.push(impGroup);
         } else {
-          // Merge timestamps, avoiding duplicate ids
           impGroup.timestamps.forEach(impTime => {
             if (!existingGroup.timestamps.some(t => t.id === impTime.id)) {
               existingGroup.timestamps.push(impTime);
@@ -611,9 +669,18 @@ function importBackup(e) {
         }
       });
 
-      await chrome.storage.sync.set({ savedVideos: merged });
+      await chrome.storage.local.set({ savedVideos: merged });
       savedVideosState = merged;
       renderVideos();
+      
+      // Update YouTube sharded playlists in background
+      for (const group of merged) {
+        chrome.runtime.sendMessage({
+          action: "UPDATE_VIDEO",
+          videoId: group.videoId,
+          updatedGroup: group
+        });
+      }
       
       const importedMomentsCount = importedGrouped.reduce(
         (acc, group) => acc + (group.timestamps || []).length,
@@ -623,7 +690,7 @@ function importBackup(e) {
     } catch (err) {
       alert(`Import failed: ${err.message}`);
     } finally {
-      importFile.value = ""; // reset input
+      importFile.value = "";
     }
   };
   reader.readAsText(file);
