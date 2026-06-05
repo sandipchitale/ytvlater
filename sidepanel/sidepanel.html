@@ -55,11 +55,19 @@
           </button>
         </div>
 
-        <!-- Sync Button -->
-        <button id="ytv-sync-btn" class="p-1.5 text-slate-500 hover:text-slate-755 hover:bg-slate-200/50 dark:text-slate-400 dark:hover:text-slate-200 dark:hover:bg-slate-800/60 rounded-lg transition-colors tooltip" title="Sync with YouTube" aria-label="Sync with YouTube">
+        <!-- Sync From YouTube (Pull & Overwrite Local) -->
+        <button id="ytv-sync-from-btn" class="p-1.5 text-slate-500 hover:text-rose-600 hover:bg-slate-200/50 dark:text-slate-400 dark:hover:text-rose-455 dark:hover:bg-slate-800/60 rounded-lg transition-colors tooltip" title="Sync FROM YouTube (Pull)" aria-label="Sync FROM YouTube (Pull)">
           <svg class="w-4.5 h-4.5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" viewBox="0 0 24 24">
-            <path d="M23 4v6h-6M1 20v-6h6"></path>
-            <path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"></path>
+            <path d="M23 4v6h-6M1.7 15.5A9 9 0 0 0 17 20.4M3.5 9A9 9 0 0 1 20.4 4.7"></path>
+            <path d="M12 6v8m-3-3l3 3 3-3"></path>
+          </svg>
+        </button>
+
+        <!-- Sync To YouTube (Push & Merge Local) -->
+        <button id="ytv-sync-to-btn" class="p-1.5 text-slate-500 hover:text-rose-600 hover:bg-slate-200/50 dark:text-slate-400 dark:hover:text-rose-455 dark:hover:bg-slate-800/60 rounded-lg transition-colors tooltip" title="Sync TO YouTube (Push & Merge)" aria-label="Sync TO YouTube (Push)">
+          <svg class="w-4.5 h-4.5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" viewBox="0 0 24 24">
+            <path d="M1 20v-6h6M22.3 8.5A9 9 0 0 0 7 3.6M20.5 15A9 9 0 0 1 3.6 19.3"></path>
+            <path d="M12 18v-8m-3 3l3-3 3 3"></path>
           </svg>
         </button>
 

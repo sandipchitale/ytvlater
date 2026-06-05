@@ -32,7 +32,8 @@ const sortBtnZA = document.getElementById("ytv-sort-btn-za");
 const importBtn = document.getElementById("ytv-import-btn");
 const importFile = document.getElementById("ytv-import-file");
 const exportBtn = document.getElementById("ytv-export-btn");
-const syncBtn = document.getElementById("ytv-sync-btn");
+const syncFromBtn = document.getElementById("ytv-sync-from-btn");
+const syncToBtn = document.getElementById("ytv-sync-to-btn");
 
 // Theme Buttons
 const themeBtnAuto = document.getElementById("ytv-theme-btn-auto");
@@ -92,7 +93,8 @@ function setupEventListeners() {
   });
 
   // Sync
-  if (syncBtn) syncBtn.addEventListener("click", syncWithYouTube);
+  if (syncFromBtn) syncFromBtn.addEventListener("click", () => syncWithYouTube("SYNC_FROM_YOUTUBE"));
+  if (syncToBtn) syncToBtn.addEventListener("click", () => syncWithYouTube("SYNC_TO_YOUTUBE"));
 
   // Export
   exportBtn.addEventListener("click", exportBackup);
@@ -217,20 +219,24 @@ async function loadAndRenderVideos() {
 }
 
 // Sync bookmarks with YouTube
-async function syncWithYouTube() {
-  if (!syncBtn) return;
-  syncBtn.disabled = true;
+async function syncWithYouTube(action = "SYNC_FROM_YOUTUBE") {
+  const activeBtn = action === "SYNC_FROM_YOUTUBE" ? syncFromBtn : syncToBtn;
+  if (!activeBtn) return;
+  activeBtn.disabled = true;
   
   // Create rotation style if not exists
-  const svg = syncBtn.querySelector("svg");
+  const svg = activeBtn.querySelector("svg");
   if (svg) svg.style.animation = "spin 1s linear infinite";
   if (loadingSkeleton) loadingSkeleton.classList.remove("hidden");
   
   try {
-    const response = await chrome.runtime.sendMessage({ action: "SYNC_VIDEOS" });
+    const response = await chrome.runtime.sendMessage({ action });
     if (response && response.success) {
       savedVideosState = response.data || [];
       renderVideos();
+      if (action === "SYNC_TO_YOUTUBE") {
+        alert("Successfully merged and synced all local bookmarks to YouTube!");
+      }
     } else {
       alert("Sync failed: " + (response?.error || "Ensure a YouTube tab is open and you are logged in."));
     }
@@ -238,7 +244,7 @@ async function syncWithYouTube() {
     console.error("Sync message failed:", err);
     alert("Sync failed: " + err.message);
   } finally {
-    syncBtn.disabled = false;
+    activeBtn.disabled = false;
     if (svg) svg.style.animation = "";
     if (loadingSkeleton) loadingSkeleton.classList.add("hidden");
   }

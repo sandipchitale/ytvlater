@@ -48,16 +48,28 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     return true;
   }
 
-  if (message.action === "SYNC_VIDEOS") {
+  if (message.action === "SYNC_FROM_YOUTUBE") {
     (async () => {
       try {
-        const data = await syncFromYouTubePlaylists();
+        const data = await syncFromYouTubePlaylists(true); // forcePull = true
         sendResponse({ success: true, data });
       } catch (error) {
-        console.error("Error syncing videos:", error);
+        console.error("Error syncing from YouTube:", error);
         sendResponse({ success: false, error: error.message });
       }
     })();
+    return true;
+  }
+
+  if (message.action === "SYNC_TO_YOUTUBE") {
+    enqueueWrite(async () => {
+      return await syncToYouTubePlaylists();
+    })
+      .then((data) => sendResponse({ success: true, data }))
+      .catch((error) => {
+        console.error("Error syncing to YouTube:", error);
+        sendResponse({ success: false, error: error.message });
+      });
     return true;
   }
 });
@@ -89,23 +101,31 @@ async function callYoutubeApi(action, payload) {
 }
 
 // Helper: Sync all sharded playlists from YouTube and consolidate
-async function syncFromYouTubePlaylists() {
+async function syncFromYouTubePlaylists(forcePull = false) {
   try {
     const listResponse = await callYoutubeApi("LIST_PLAYLISTS", {});
     const playlists = parsePlaylistsFromBrowse(listResponse);
     let ytvPlaylists = playlists.filter(p => p.title === "ytvlater" || p.title.startsWith("ytvlater-"));
     
     // Get local cache to merge and fallback
-    const localData = await chrome.storage.local.get(["ytvPlaylists", "partitionMetadata", "savedVideos"]);
+    let localData = {};
+    if (!forcePull) {
+      localData = await chrome.storage.local.get(["ytvPlaylists", "partitionMetadata", "savedVideos"]);
+    }
     const cachedPlaylists = localData.ytvPlaylists || [];
     const cachedPartitionMetadata = localData.partitionMetadata || [];
     const cachedSavedVideos = localData.savedVideos || [];
 
     // Merge fetched playlists with cached playlists to handle YouTube list lag
-    const mergedMap = new Map();
-    cachedPlaylists.forEach(p => mergedMap.set(p.id, p));
-    ytvPlaylists.forEach(p => mergedMap.set(p.id, p));
-    const mergedPlaylists = Array.from(mergedMap.values());
+    let mergedPlaylists = [];
+    if (forcePull) {
+      mergedPlaylists = ytvPlaylists;
+    } else {
+      const mergedMap = new Map();
+      cachedPlaylists.forEach(p => mergedMap.set(p.id, p));
+      ytvPlaylists.forEach(p => mergedMap.set(p.id, p));
+      mergedPlaylists = Array.from(mergedMap.values());
+    }
 
     // Cache the merged playlists list
     await chrome.storage.local.set({ ytvPlaylists: mergedPlaylists });
@@ -115,7 +135,7 @@ async function syncFromYouTubePlaylists() {
       callYoutubeApi("GET_PLAYLIST", { playlistId: playlist.id })
         .then(details => {
           const parsed = parseMetadataFromPlaylistBrowse(details);
-          const cachedPart = cachedPartitionMetadata.find(cp => cp.playlistId === playlist.id);
+          const cachedPart = forcePull ? null : cachedPartitionMetadata.find(cp => cp.playlistId === playlist.id);
           
           if (parsed) {
             // Check if the fetched metadata from YouTube is older/stale compared to our local cache
@@ -161,27 +181,22 @@ async function syncFromYouTubePlaylists() {
                               errMsg.includes("fetch") || 
                               errMsg.includes("network");
                               
-          if (isTransient) {
+          if (isTransient && !forcePull) {
             // Fallback to local cache for transient errors
             const cachedPart = cachedPartitionMetadata.find(cp => cp.playlistId === playlist.id);
             if (cachedPart) {
               console.log(`Sync error fallback (transient): Using cached partition metadata for ${playlist.title}`);
               return cachedPart;
             }
-            return {
-              playlistId: playlist.id,
-              playlistTitle: playlist.title,
-              sequence: 1,
-              createdAt: 0,
-              updatedAt: 0,
-              videos: [],
-              videoSetIds: {}
-            };
-          } else {
-            // Playlist is gone/deleted on YouTube
-            console.warn(`Sync partition ${playlist.title} is gone or inaccessible. Removing from cache.`);
-            return null; // Return null to signal deletion
           }
+          
+          if (isTransient && forcePull) {
+            throw err;
+          }
+          
+          // Playlist is gone/deleted on YouTube
+          console.warn(`Sync partition ${playlist.title} is gone or inaccessible. Removing from cache.`);
+          return null; // Return null to signal deletion
         })
     );
 
@@ -210,7 +225,7 @@ async function syncFromYouTubePlaylists() {
     // Guard: If we retrieved NO videos at all but we have cached savedVideos, and we have active partitions
     // that failed transiently (returning default empty objects instead of null), we preserve the cache.
     // But if all partitions were deleted (partitionMetadata is empty), we allow it to be empty.
-    if (consolidatedVideos.length === 0 && cachedSavedVideos.length > 0 && partitionMetadata.length > 0) {
+    if (!forcePull && consolidatedVideos.length === 0 && cachedSavedVideos.length > 0 && partitionMetadata.length > 0) {
       console.warn("Sync returned empty consolidated videos, but cachedSavedVideos had items. Preserving cache to avoid blank sidebar.");
       consolidatedVideos = cachedSavedVideos;
     }
@@ -230,6 +245,151 @@ async function syncFromYouTubePlaylists() {
     throw error;
   }
 }
+
+// Helper: Sync all local saved videos TO YouTube, merging with YouTube's live partitions
+async function syncToYouTubePlaylists() {
+  try {
+    // 1. Get the current local savedVideos
+    const localData = await chrome.storage.local.get("savedVideos");
+    const localSavedVideos = localData.savedVideos || [];
+
+    // 2. Fetch fresh playlists and metadata from YouTube first (Clean Force Pull)
+    const youtubeSavedVideos = await syncFromYouTubePlaylists(true);
+    
+    // 3. Load updated partitionMetadata and ytvPlaylists from storage
+    const storage = await chrome.storage.local.get(["partitionMetadata", "ytvPlaylists"]);
+    let partitionMetadata = storage.partitionMetadata || [];
+    let ytvPlaylists = storage.ytvPlaylists || [];
+
+    // 4. Merge local savedVideos into the YouTube list
+    const mergedVideos = [...youtubeSavedVideos];
+    for (const localGroup of localSavedVideos) {
+      const ytGroup = mergedVideos.find(g => g.videoId === localGroup.videoId);
+      if (!ytGroup) {
+        mergedVideos.push(localGroup);
+      } else {
+        if (Array.isArray(localGroup.timestamps)) {
+          localGroup.timestamps.forEach(localTs => {
+            const ytTs = ytGroup.timestamps.find(t => t.id === localTs.id);
+            if (!ytTs) {
+              ytGroup.timestamps.push(localTs);
+            } else {
+              // Merge notes if local has one and YouTube doesn't
+              if (localTs.notes && !ytTs.notes) {
+                ytTs.notes = localTs.notes;
+              }
+            }
+          });
+        }
+      }
+    }
+
+    // 5. Redistribute mergedVideos into partitionMetadata
+    if (partitionMetadata.length === 0) {
+      const ytvPlaylistsFresh = await getOrMakeYtvPlaylists();
+      const storageFresh = await chrome.storage.local.get(["partitionMetadata", "ytvPlaylists"]);
+      partitionMetadata = storageFresh.partitionMetadata || [];
+      ytvPlaylists = storageFresh.ytvPlaylists || [];
+    }
+
+    // Clear video groups from existing partitions to perform clean redistribution
+    partitionMetadata.forEach(part => {
+      part.videos = [];
+    });
+
+    // Distribute each merged video group to the partitions
+    for (const group of mergedVideos) {
+      let placed = false;
+      for (const part of partitionMetadata) {
+        const testVideos = [...part.videos, group];
+        const testWrapper = {
+          sequence: part.sequence || 1,
+          createdAt: part.createdAt || Date.now(),
+          videos: testVideos
+        };
+        const testJson = `[YTVLATER]${JSON.stringify(testWrapper)}[/YTVLATER]`;
+        if (testJson.length <= 4500) {
+          part.videos.push(group);
+          placed = true;
+          break;
+        }
+      }
+
+      if (!placed) {
+        // Create a new partition
+        const uuid = crypto.randomUUID();
+        const newTitle = `ytvlater-${uuid}`;
+        const createRes = await callYoutubeApi("CREATE_PLAYLIST", { title: newTitle });
+        const newPlaylistId = createRes?.playlistId;
+        if (!newPlaylistId) {
+          throw new Error(`Failed to create new playlist partition ${newTitle} on YouTube.`);
+        }
+
+        const activePartition = partitionMetadata[partitionMetadata.length - 1];
+        const nextSeq = (activePartition ? activePartition.sequence : 0) + 1;
+        const newPartition = {
+          playlistId: newPlaylistId,
+          playlistTitle: newTitle,
+          sequence: nextSeq,
+          createdAt: Date.now(),
+          updatedAt: Date.now(),
+          videos: [group],
+          videoSetIds: {}
+        };
+        partitionMetadata.push(newPartition);
+
+        ytvPlaylists.push({ id: newPlaylistId, title: newTitle });
+        await chrome.storage.local.set({ ytvPlaylists });
+      }
+    }
+
+    // 6. Write the redistributed metadata back to YouTube partitions
+    for (const part of partitionMetadata) {
+      part.updatedAt = Date.now();
+      const wrapper = {
+        sequence: part.sequence || 1,
+        createdAt: part.createdAt || Date.now(),
+        updatedAt: part.updatedAt,
+        videos: part.videos
+      };
+      const descText = `[YTVLATER]${JSON.stringify(wrapper)}[/YTVLATER]`;
+
+      // Update description on YouTube
+      await callYoutubeApi("SET_DESCRIPTION", { playlistId: part.playlistId, description: descText });
+
+      // Get current physical videos in the playlist to see if we need to ADD_VIDEO
+      let freshDetails = await callYoutubeApi("GET_PLAYLIST", { playlistId: part.playlistId });
+      part.videoSetIds = parseVideoSetIds(freshDetails);
+
+      // Physical additions
+      for (const group of part.videos) {
+        if (!part.videoSetIds[group.videoId]) {
+          await callYoutubeApi("ADD_VIDEO", { playlistId: part.playlistId, videoId: group.videoId }).catch(console.error);
+        }
+      }
+
+      // Refresh videoSetIds after additions
+      freshDetails = await callYoutubeApi("GET_PLAYLIST", { playlistId: part.playlistId });
+      part.videoSetIds = parseVideoSetIds(freshDetails);
+    }
+
+    // 7. Save everything back to local storage
+    await chrome.storage.local.set({
+      savedVideos: mergedVideos,
+      partitionMetadata: partitionMetadata,
+      ytvPlaylists: ytvPlaylists
+    });
+
+    // Broadcast refresh to sidepanel UI
+    chrome.runtime.sendMessage({ action: "REFRESH_SAVED_VIDEOS" }).catch(() => {});
+
+    return mergedVideos;
+  } catch (error) {
+    console.error("Sync to YouTube error:", error);
+    throw error;
+  }
+}
+
 
 // Helper: Get all matching playlists or create the first one
 async function getOrMakeYtvPlaylists() {

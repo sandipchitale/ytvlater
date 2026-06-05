@@ -69,8 +69,10 @@ To load this extension locally in Google Chrome:
 - A success badge `✓` will flash green on the extension toolbar icon, and a glassmorphic notification toast will slide up showing the saved time.
 
 ### 2. Synchronization & Manual Sync
-- Bookmarks are saved to your YouTube playlists. If your sidebar doesn't show updates made from another device, click the **Sync** (refresh-arrows) button in the top menu bar.
-- Note: Since the extension uses your active YouTube browser session, a YouTube tab must be open in your browser to perform background API requests.
+YTVLater offers two explicit synchronization methods in the top toolbar to handle multi-device management:
+- **Sync FROM YouTube (Pull)**: Click the circular arrows button with a **downward arrow** to pull all playlist bookmarks from YouTube, ignoring your local cache and completely replacing it with the latest cloud state.
+- **Sync TO YouTube (Push & Merge)**: Click the circular arrows button with an **upward arrow** to merge your local cache with YouTube's live data and redistribute/write the consolidated bookmarks back up to your private YouTube playlists.
+- *Note*: Since the extension operates using your active YouTube browser session context, at least one YouTube watch/home tab must be open in the browser to perform sync operations.
 
 ### 3. Managing Saved Moments
 - Click the extension icon in the toolbar to open the **Chrome Side Panel**.
